@@ -1,16 +1,29 @@
 const express = require("express");
 const fs = require("fs");
+const path = require("path");
+const http = require("http");
 const app = express();
 const PORT = 3000;
 
-// Небезопасный парсинг JSON (без проверки типа)
-app.use(express.json());
+// Небезопасный парсинг JSON без лимита
+app.use(express.json({ limit: "1gb" })); // Слишком большой лимит
 
-// Глобальная переменная (плохая практика)
+// Множество глобальных переменных (плохая практика)
 var users = [];
+var logs = [];
+var tempData = {};
+var secretKey = "my_super_secret_key_12345";
+var dbPassword = "database_password_123!";
+
+// Функция с очевидной ошибкой деления на ноль
+function calculateAverage(numbers) {
+  // Потенциальное деление на ноль
+  return numbers.reduce((sum, n) => sum + n, 0) / numbers.length;
+}
 
 // Обработчик запросов без проверки ошибок
 app.get("/users", function (req, res) {
+  // Использование глобальной переменной напрямую
   res.send(users);
 });
 
@@ -28,6 +41,12 @@ app.get("/user/:id", function (req, res) {
   } else {
     res.status(404).send("User not found");
   }
+});
+
+// Нереализованный обработчик ошибок
+app.get("/error", function (req, res) {
+  throw new Error("Unhandled error");
+  // нет блока try-catch, и нет обработчика ошибок
 });
 
 // Небезопасная операция с файлами
@@ -62,8 +81,8 @@ app.post("/users", function (req, res) {
   res.send("User added");
 });
 
-// Запуск сервера без обработки ошибок
-app.listen(PORT);
+// Создание сервера с незащищенным HTTP
+http.createServer(app).listen(PORT);
 console.log("Server running on port " + PORT);
 
 // Неиспользуемая функция
@@ -71,7 +90,86 @@ function cleanUsers() {
   users = [];
 }
 
-// Функция без документации, сложная для понимания
+// Функция с неиспользуемыми параметрами
+function processData(data, options, callback, extraParam1, extraParam2) {
+  return data.map((item) => item * 2);
+}
+
+// Функция без документации, сложная для понимания с неинформативным именем
 function x(a, b, c) {
   return a ? b + c : b * c;
+}
+
+// Дублирование функции выше, но с другим именем
+function calculate(condition, value1, value2) {
+  return condition ? value1 + value2 : value1 * value2;
+}
+
+// Жестко закодированный IP-адрес
+const hardcodedIP = "192.168.1.123";
+app.get("/connect", function (req, res) {
+  http.get(`http://${hardcodedIP}/api/v1/data`, (response) => {
+    res.send("Connected");
+  });
+});
+
+// Жестко закодированный пароль базы данных
+function connectToDatabase() {
+  return {
+    host: "localhost",
+    user: "root",
+    password: "admin123", // Плохая практика: хранение пароля в коде
+    database: "myapp",
+  };
+}
+
+// Функция с большой цикломатической сложностью
+function determineUserAccess(
+  user,
+  role,
+  project,
+  department,
+  level,
+  isAdmin,
+  isActive
+) {
+  if (isAdmin) {
+    return true;
+  } else if (!isActive) {
+    return false;
+  } else if (role === "manager") {
+    if (project === "secret") {
+      if (department === "IT") {
+        if (level >= 5) {
+          return true;
+        } else {
+          return false;
+        }
+      } else if (department === "Security") {
+        return true;
+      } else {
+        return false;
+      }
+    } else if (project === "public") {
+      return true;
+    } else {
+      if (level >= 3) {
+        return true;
+      } else {
+        return false;
+      }
+    }
+  } else if (role === "developer") {
+    if (project === "secret") {
+      return false;
+    } else {
+      if (level >= 2) {
+        return true;
+      } else {
+        return false;
+      }
+    }
+  } else {
+    return false;
+  }
 }
