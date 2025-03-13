@@ -1,175 +1,217 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const http = require("http");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const app = express();
-const PORT = 3000;
 
-// Небезопасный парсинг JSON без лимита
-app.use(express.json({ limit: "1gb" })); // Слишком большой лимит
+const PORT = process.env.PORT || 3000;
+const NODE_ENV = process.env.NODE_ENV || "development";
+const UPLOAD_DIR = path.join(__dirname, "uploads");
 
-// Множество глобальных переменных (плохая практика)
-var users = [];
-var logs = [];
-var tempData = {};
-var secretKey = "my_super_secret_key_12345";
-var dbPassword = "database_password_123!";
-
-// Функция с очевидной ошибкой деления на ноль
-function calculateAverage(numbers) {
-  // Потенциальное деление на ноль
-  return numbers.reduce((sum, n) => sum + n, 0) / numbers.length;
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
-// Обработчик запросов без проверки ошибок
-app.get("/users", function (req, res) {
-  // Использование глобальной переменной напрямую
-  res.send(users);
+app.use(helmet());
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
 });
+app.use(limiter);
 
-// Небезопасное использование параметров запроса
-app.get("/user/:id", function (req, res) {
-  var userId = req.params.id;
-  // SQL Injection уязвимость
-  var query = "SELECT * FROM users WHERE id = " + userId;
-
-  // Имитация выполнения запроса
-  var user = users.find((u) => u.id == userId);
-
-  if (user) {
-    res.send(user);
-  } else {
-    res.status(404).send("User not found");
+class UserRepository {
+  constructor() {
+    this.users = [];
   }
-});
 
-// Нереализованный обработчик ошибок
-app.get("/error", function (req, res) {
-  throw new Error("Unhandled error");
-  // нет блока try-catch, и нет обработчика ошибок
-});
+  getAll(limit = 10, offset = 0) {
+    return this.users.slice(offset, offset + limit);
+  }
 
-// Небезопасная операция с файлами
-app.post("/upload", function (req, res) {
-  var fileName = req.body.fileName;
-  var content = req.body.content;
+  findById(id) {
+    if (!id) return null;
+    return this.users.find((user) => user.id === id) || null;
+  }
 
-  // Path traversal уязвимость
-  fs.writeFile("./uploads/" + fileName, content, function (err) {
-    if (err) {
-      console.log(err);
-      return;
+  add(userData) {
+    if (!userData || !userData.id || !userData.name) {
+      throw new Error("Invalid user data");
     }
-    res.send("File uploaded successfully");
-  });
-});
 
-// Использование eval (очень опасно)
-app.post("/calculate", function (req, res) {
-  var expression = req.body.expression;
+    const newUser = {
+      id: userData.id,
+      name: userData.name,
+      email: userData.email || "",
+      active: userData.active || false,
+      createdAt: new Date().toISOString(),
+    };
+
+    this.users.push(newUser);
+    return newUser;
+  }
+
+  remove(id) {
+    if (!id) return false;
+
+    const initialLength = this.users.length;
+    this.users = this.users.filter((user) => user.id !== id);
+
+    return this.users.length < initialLength;
+  }
+
+  clear() {
+    this.users = [];
+  }
+}
+
+const userRepository = new UserRepository();
+
+function errorHandler(err, req, res, next) {
+  console.error("Error occurred:", err);
+  const statusCode = err.statusCode || 500;
+  const message =
+    NODE_ENV === "production"
+      ? "An error occurred. Please try again."
+      : err.message;
+
+  res.status(statusCode).json({ error: message });
+}
+
+function validateUser(req, res, next) {
+  const { id } = req.params;
+
+  if (!id) {
+    return res.status(400).json({ error: "User ID is required" });
+  }
+
+  const user = userRepository.findById(id);
+
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+
+  req.user = user;
+  next();
+}
+
+app.get("/users", (req, res) => {
   try {
-    var result = eval(expression); // Серьезная уязвимость
-    res.send({ result: result });
-  } catch (e) {
-    res.status(400).send("Invalid expression");
+    const limit = parseInt(req.query.limit, 10) || 10;
+    const page = parseInt(req.query.page, 10) || 1;
+    const offset = (page - 1) * limit;
+
+    const users = userRepository.getAll(limit, offset);
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch users" });
   }
 });
 
-// Незакрытый коллбэк и отсутствие обработки ошибок
-app.post("/users", function (req, res) {
-  users.push(req.body);
-  res.send("User added");
+app.get("/user/:id", validateUser, (req, res) => {
+  res.json(req.user);
 });
 
-// Создание сервера с незащищенным HTTP
-http.createServer(app).listen(PORT);
-console.log("Server running on port " + PORT);
+app.post("/users", (req, res, next) => {
+  try {
+    const newUser = userRepository.add(req.body);
+    res.status(201).json(newUser);
+  } catch (error) {
+    next(error);
+  }
+});
 
-// Неиспользуемая функция
-function cleanUsers() {
-  users = [];
-}
+app.delete("/user/:id", validateUser, (req, res) => {
+  try {
+    const success = userRepository.remove(req.params.id);
 
-// Функция с неиспользуемыми параметрами
-function processData(data, options, callback, extraParam1, extraParam2) {
-  return data.map((item) => item * 2);
-}
+    if (success) {
+      return res.status(204).end();
+    }
 
-// Функция без документации, сложная для понимания с неинформативным именем
-function x(a, b, c) {
-  return a ? b + c : b * c;
-}
+    res.status(500).json({ error: "Failed to delete user" });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
-// Дублирование функции выше, но с другим именем
-function calculate(condition, value1, value2) {
-  return condition ? value1 + value2 : value1 * value2;
-}
+app.post("/upload", (req, res, next) => {
+  try {
+    const { fileName } = req.body;
 
-// Жестко закодированный IP-адрес
-const hardcodedIP = "192.168.1.123";
-app.get("/connect", function (req, res) {
-  http.get(`http://${hardcodedIP}/api/v1/data`, (response) => {
-    res.send("Connected");
+    if (!fileName || !req.body.content) {
+      return res
+        .status(400)
+        .json({ error: "File name and content are required" });
+    }
+
+    const safeName = path.basename(fileName).replace(/[^a-z0-9.]/gi, "_");
+    const filePath = path.join(UPLOAD_DIR, safeName);
+
+    fs.writeFile(filePath, req.body.content, (err) => {
+      if (err) {
+        return next(err);
+      }
+      res
+        .status(201)
+        .json({ message: "File uploaded successfully", path: safeName });
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/calculate", (req, res) => {
+  try {
+    const { a, b, operation } = req.body;
+
+    if (typeof a !== "number" || typeof b !== "number") {
+      return res.status(400).json({ error: "Numbers are required" });
+    }
+
+    let result;
+
+    switch (operation) {
+      case "add":
+        result = a + b;
+        break;
+      case "subtract":
+        result = a - b;
+        break;
+      case "multiply":
+        result = a * b;
+        break;
+      case "divide":
+        if (b === 0) {
+          return res.status(400).json({ error: "Division by zero" });
+        }
+        result = a / b;
+        break;
+      default:
+        return res.status(400).json({ error: "Invalid operation" });
+    }
+
+    res.json({ result });
+  } catch (error) {
+    res.status(500).json({ error: "Calculation error" });
+  }
+});
+
+app.use(errorHandler);
+
+const server = app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT} in ${NODE_ENV} mode`);
+});
+
+process.on("SIGTERM", () => {
+  console.log("SIGTERM received, shutting down gracefully");
+  server.close(() => {
+    console.log("Server closed");
+    process.exit(0);
   });
 });
 
-// Жестко закодированный пароль базы данных
-function connectToDatabase() {
-  return {
-    host: "localhost",
-    user: "root",
-    password: "admin123", // Плохая практика: хранение пароля в коде
-    database: "myapp",
-  };
-}
-
-// Функция с большой цикломатической сложностью
-function determineUserAccess(
-  user,
-  role,
-  project,
-  department,
-  level,
-  isAdmin,
-  isActive
-) {
-  if (isAdmin) {
-    return true;
-  } else if (!isActive) {
-    return false;
-  } else if (role === "manager") {
-    if (project === "secret") {
-      if (department === "IT") {
-        if (level >= 5) {
-          return true;
-        } else {
-          return false;
-        }
-      } else if (department === "Security") {
-        return true;
-      } else {
-        return false;
-      }
-    } else if (project === "public") {
-      return true;
-    } else {
-      if (level >= 3) {
-        return true;
-      } else {
-        return false;
-      }
-    }
-  } else if (role === "developer") {
-    if (project === "secret") {
-      return false;
-    } else {
-      if (level >= 2) {
-        return true;
-      } else {
-        return false;
-      }
-    }
-  } else {
-    return false;
-  }
-}
+module.exports = { app, server, UserRepository };
